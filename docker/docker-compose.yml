@@ -1,0 +1,18 @@
+services:
+  azure-local:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: azure-local:dev
+    ports:
+      - "4577:4577"
+    volumes:
+      - azure-local-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4577/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  azure-local-data:

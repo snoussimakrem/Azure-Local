@@ -1,0 +1,42 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go test ./...
+
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: bash scripts/offline-test.sh
+
+  python-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: go build -o bin/azlocal ./cmd/azlocal
+      - run: bin/azlocal start --daemon --port 4577
+      - name: Run SDK compatibility tests
+        run: |
+          eval "$(bin/azlocal env)"
+          export AZURE_STORAGE_CONNECTION_STRING
+          pip install -q -r tests/python/requirements.txt
+          pytest -q tests/python
+      - if: always()
+        run: bin/azlocal stop || true
