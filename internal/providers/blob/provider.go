@@ -7,21 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/azure-local/azure-local/internal/kernel"
 )
 
-// Provider implements the Azure Blob Storage data plane for the subset of
-// container operations in Milestone 1. Path shape:
-//
-//	/{account}/                   — account-level (list containers)
-//	/{account}/{container}        — container-level
-//	/{account}/{container}/{blob} — blob-level (not yet implemented)
 type Provider struct {
 	logger  *slog.Logger
 	persist *kernel.PersistenceManager
 	bus     *kernel.EventBus
 	root    string
+
+	locksMu sync.Mutex
+	locks   map[string]*sync.Mutex
 }
 
 func New(persist *kernel.PersistenceManager, bus *kernel.EventBus, logger *slog.Logger) (*Provider, error) {
@@ -32,7 +30,13 @@ func New(persist *kernel.PersistenceManager, bus *kernel.EventBus, logger *slog.
 	if err := os.MkdirAll(filepath.Join(root, "accounts"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Provider{logger: logger, persist: persist, bus: bus, root: root}, nil
+	return &Provider{
+		logger:  logger,
+		persist: persist,
+		bus:     bus,
+		root:    root,
+		locks:   make(map[string]*sync.Mutex),
+	}, nil
 }
 
 func (p *Provider) Name() string    { return "blob" }
@@ -44,16 +48,23 @@ func (p *Provider) Stop(context.Context) error  { return nil }
 
 func (p *Provider) Health(context.Context) kernel.HealthStatus { return kernel.Healthy() }
 
-// Handle claims only paths that look like Blob data-plane paths. It returns
-// false for everything else, including all future ARM paths, so the gateway
-// can route elsewhere without us ever inventing a fake 200.
+func (p *Provider) blobLock(key string) *sync.Mutex {
+	p.locksMu.Lock()
+	defer p.locksMu.Unlock()
+	m, ok := p.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		p.locks[key] = m
+	}
+	return m
+}
+
 func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	if path == "" {
 		return false
 	}
 
-	// Reserve control-plane prefixes for later milestones.
 	for _, reserved := range []string{"subscriptions/", "providers/", "tenants/"} {
 		if strings.HasPrefix(path, reserved) {
 			return false
@@ -64,38 +75,31 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	parts := strings.Split(path, "/")
+	parts := strings.SplitN(path, "/", 3)
 	account := parts[0]
 	if !validAccountName(account) {
 		return false
 	}
-
-	var container string
+	var container, blobName string
 	if len(parts) >= 2 {
 		container = parts[1]
 	}
-	if len(parts) > 2 {
-		// Blob-level ops are not yet implemented. Return 501 honestly
-		// instead of pretending the object exists.
-		if container != "" && parts[2] != "" {
-			writeBlobError(w, http.StatusNotImplemented, "NotImplemented",
-				"Blob-level operations are not implemented in this build.")
-			return true
-		}
+	if len(parts) >= 3 {
+		blobName = parts[2]
 	}
 
 	q := req.URL.Query()
 	restype := q.Get("restype")
 	comp := q.Get("comp")
 
-	// Account-level: GET /{account}/?comp=list
+	// Account-level: list containers.
 	if container == "" && comp == "list" && req.Method == http.MethodGet {
 		p.listContainers(w, req, account)
 		return true
 	}
 
-	// Container-level ops require restype=container.
-	if container != "" && restype == "container" {
+	// Container-level.
+	if container != "" && blobName == "" && restype == "container" {
 		switch req.Method {
 		case http.MethodPut:
 			p.createContainer(w, req, account, container)
@@ -107,11 +111,14 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 			p.headContainer(w, req, account, container)
 			return true
 		case http.MethodGet:
-			if comp == "metadata" {
+			switch comp {
+			case "metadata":
 				p.getContainerMetadata(w, req, account, container)
 				return true
-			}
-			if comp == "acl" {
+			case "list":
+				p.listBlobs(w, req, account, container)
+				return true
+			case "acl":
 				writeBlobError(w, http.StatusNotImplemented, "NotImplemented",
 					"ACL operations are not implemented in this build.")
 				return true
@@ -119,10 +126,43 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 		}
 	}
 
+	// Blob-level.
+	if container != "" && blobName != "" {
+		switch req.Method {
+		case http.MethodPut:
+			switch comp {
+			case "":
+				p.uploadBlob(w, req, account, container, blobName)
+				return true
+			case "block":
+				p.putBlock(w, req, account, container, blobName)
+				return true
+			case "blocklist":
+				p.putBlockList(w, req, account, container, blobName)
+				return true
+			}
+		case http.MethodGet:
+			switch comp {
+			case "":
+				p.downloadBlob(w, req, account, container, blobName)
+				return true
+			case "blocklist":
+				writeBlobError(w, http.StatusNotImplemented, "NotImplemented",
+					"Get Block List is not implemented in this build.")
+				return true
+			}
+		case http.MethodHead:
+			p.headBlob(w, req, account, container, blobName)
+			return true
+		case http.MethodDelete:
+			p.deleteBlob(w, req, account, container, blobName)
+			return true
+		}
+	}
+
 	return false
 }
 
-// validAccountName matches Azure storage account naming for the data plane.
 func validAccountName(name string) bool {
 	if len(name) < 3 || len(name) > 24 {
 		return false
