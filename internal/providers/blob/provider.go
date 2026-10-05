@@ -65,7 +65,7 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	for _, reserved := range []string{"subscriptions/", "providers/", "tenants/"} {
+	for _, reserved := range []string{"subscriptions/", "providers/", "tenants/", "metadata/"} {
 		if strings.HasPrefix(path, reserved) {
 			return false
 		}

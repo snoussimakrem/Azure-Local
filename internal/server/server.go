@@ -11,6 +11,7 @@ import (
 
 	"github.com/azure-local/azure-local/internal/gateway"
 	"github.com/azure-local/azure-local/internal/kernel"
+	"github.com/azure-local/azure-local/internal/providers/arm"
 	"github.com/azure-local/azure-local/internal/providers/blob"
 )
 
@@ -30,6 +31,16 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 	}
 	bus := kernel.NewEventBus()
 	registry := kernel.NewRegistry()
+
+	// ARM must be registered first so /metadata/endpoints and /subscriptions
+	// are claimed before any data-plane provider can consider them.
+	armProvider, err := arm.New(persist, bus, logger)
+	if err != nil {
+		return nil, fmt.Errorf("arm provider: %w", err)
+	}
+	if err := registry.Register(armProvider); err != nil {
+		return nil, fmt.Errorf("register arm: %w", err)
+	}
 
 	blobProvider, err := blob.New(persist, bus, logger)
 	if err != nil {
@@ -56,8 +67,6 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 	}, nil
 }
 
-// Run blocks until ctx is cancelled. On cancellation, it drains HTTP and
-// stops every service in reverse order.
 func (s *Server) Run(ctx context.Context) error {
 	for _, svc := range s.registry.All() {
 		if err := svc.Init(ctx); err != nil {
