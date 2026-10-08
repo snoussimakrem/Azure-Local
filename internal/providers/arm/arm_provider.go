@@ -13,14 +13,15 @@ type Provider struct {
 	logger *slog.Logger
 	store  *Store
 	bus    *kernel.EventBus
+	auth   kernel.AuthFunc
 }
 
-func New(persist *kernel.PersistenceManager, bus *kernel.EventBus, logger *slog.Logger) (*Provider, error) {
+func New(persist *kernel.PersistenceManager, bus *kernel.EventBus, logger *slog.Logger, auth kernel.AuthFunc) (*Provider, error) {
 	store, err := NewStore(persist)
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{logger: logger, store: store, bus: bus}, nil
+	return &Provider{logger: logger, store: store, bus: bus, auth: auth}, nil
 }
 
 func (p *Provider) Name() string    { return "arm" }
@@ -38,7 +39,7 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	// Terraform metadata host contract.
+	// Terraform metadata host contract — public, no auth.
 	if path == "metadata/endpoints" {
 		p.handleMetadata(w, req)
 		return true
@@ -46,23 +47,36 @@ func (p *Provider) Handle(w http.ResponseWriter, req *http.Request) bool {
 
 	parts := strings.Split(path, "/")
 
+	// Only proceed if this looks like an ARM request.
+	claim := false
 	switch parts[0] {
 	case "subscriptions":
-		return p.handleSubscriptions(w, req, parts)
+		claim = true
 	case "tenants":
 		if len(parts) == 1 {
 			p.handleTenants(w, req)
 			return true
 		}
 	case "providers":
-		// /providers/{ns}/operations  — accepted, returns empty list
 		if len(parts) == 3 && parts[2] == "operations" {
 			writeARMJSON(w, http.StatusOK, map[string]any{"value": []any{}})
 			return true
 		}
 	}
+	if !claim {
+		return false
+	}
 
-	return false
+	// Enforce auth if configured.
+	if p.auth != nil {
+		if err := p.auth(req); err != nil {
+			writeARMError(w, http.StatusUnauthorized, "AuthenticationFailed",
+				err.Error())
+			return true
+		}
+	}
+
+	return p.handleSubscriptions(w, req, parts)
 }
 
 func (p *Provider) handleSubscriptions(w http.ResponseWriter, req *http.Request, parts []string) bool {
@@ -138,9 +152,6 @@ func (p *Provider) handleResourceGroups(w http.ResponseWriter, req *http.Request
 }
 
 func (p *Provider) handleProviderResources(w http.ResponseWriter, req *http.Request, parts []string, sub, rg string) bool {
-	// path shapes:
-	//   subscriptions/{sub}/providers/{ns}/{type}[/{name}]
-	//   subscriptions/{sub}/resourceGroups/{rg}/providers/{ns}/{type}[/{name}]
 	var idx int
 	if rg == "" {
 		idx = 3
@@ -148,7 +159,6 @@ func (p *Provider) handleProviderResources(w http.ResponseWriter, req *http.Requ
 		idx = 5
 	}
 	if idx+1 >= len(parts) {
-		// Listing provider namespaces is not supported. Don't claim.
 		return false
 	}
 	ns := parts[idx]
@@ -161,9 +171,7 @@ func (p *Provider) handleProviderResources(w http.ResponseWriter, req *http.Requ
 		}
 		return false
 	}
-
 	if idx+3 != len(parts) {
-		// Nested child resources: not supported yet.
 		return false
 	}
 	name := parts[idx+2]

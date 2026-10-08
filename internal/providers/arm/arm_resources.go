@@ -140,7 +140,8 @@ func (p *Provider) putResource(w http.ResponseWriter, req *http.Request, sub, rg
 		Location:      in.Location,
 		Body:          in,
 	}
-	if prev, ok := p.store.ReadResource(sub, rg, ns, rtype, name); ok {
+	prev, existed := p.store.ReadResource(sub, rg, ns, rtype, name)
+	if existed {
 		stored.Created = prev.Created
 	} else {
 		stored.Created = time.Now().UTC()
@@ -151,19 +152,12 @@ func (p *Provider) putResource(w http.ResponseWriter, req *http.Request, sub, rg
 		return
 	}
 
-	_, existed := p.store.ReadResource(sub, rg, ns, rtype, name)
 	status := http.StatusCreated
 	if existed {
 		status = http.StatusOK
 	}
-	// Only GET-after-write is authoritative; simplest check:
-	status = http.StatusOK
-	// Actually check by trying to read before we wrote. We already read prev.
-	// Redo cleanly:
-	//   (declared before the write above; keeping this simple.)
-	_ = status
 
-	writeARMJSON(w, http.StatusOK, in)
+	writeARMJSON(w, status, in)
 
 	p.bus.Publish(kernel.Event{
 		Type: "ResourceCreated",

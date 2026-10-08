@@ -250,6 +250,12 @@ func cmdEnv() {
 	fmt.Printf("export AZURE_STORAGE_ACCOUNT=%s\n", devAccount)
 	fmt.Printf("export AZURE_STORAGE_KEY='%s'\n", devAccountKey)
 	fmt.Printf("export AZURE_STORAGE_CONNECTION_STRING='%s'\n", connStr)
+	fmt.Printf("export AZURE_AUTHORITY_HOST=http://localhost:%d\n", defaultPort)
+	fmt.Printf("export ARM_TENANT_ID=local\n")
+	fmt.Printf("export ARM_SUBSCRIPTION_ID=local-sub\n")
+	fmt.Printf("export ARM_CLIENT_ID=local-client\n")
+	fmt.Printf("export ARM_CLIENT_SECRET=local-secret\n")
+	fmt.Printf("export ARM_ENDPOINT=http://localhost:%d\n", defaultPort)
 	fmt.Printf("export AZURERM_METADATA_HOST=localhost:%d\n", defaultPort)
 }
 

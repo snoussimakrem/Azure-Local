@@ -13,6 +13,7 @@ import (
 	"github.com/azure-local/azure-local/internal/kernel"
 	"github.com/azure-local/azure-local/internal/providers/arm"
 	"github.com/azure-local/azure-local/internal/providers/blob"
+	"github.com/azure-local/azure-local/internal/providers/identity"
 )
 
 type Server struct {
@@ -22,6 +23,8 @@ type Server struct {
 	bus      *kernel.EventBus
 	persist  *kernel.PersistenceManager
 	http     *http.Server
+
+	identity *identity.Provider
 }
 
 func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
@@ -32,9 +35,17 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 	bus := kernel.NewEventBus()
 	registry := kernel.NewRegistry()
 
-	// ARM must be registered first so /metadata/endpoints and /subscriptions
-	// are claimed before any data-plane provider can consider them.
-	armProvider, err := arm.New(persist, bus, logger)
+	// Order matters. Identity must claim token/discovery paths before ARM.
+	// ARM must claim /metadata/endpoints and /subscriptions before Blob.
+	idp, err := identity.New(persist, bus, logger)
+	if err != nil {
+		return nil, fmt.Errorf("identity provider: %w", err)
+	}
+	if err := registry.Register(idp); err != nil {
+		return nil, fmt.Errorf("register identity: %w", err)
+	}
+
+	armProvider, err := arm.New(persist, bus, logger, idp.ValidateRequest)
 	if err != nil {
 		return nil, fmt.Errorf("arm provider: %w", err)
 	}
@@ -64,6 +75,7 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 		bus:      bus,
 		persist:  persist,
 		http:     httpSrv,
+		identity: idp,
 	}, nil
 }
 
