@@ -64,6 +64,14 @@ func (p *Provider) putResourceGroup(w http.ResponseWriter, req *http.Request, su
 		in.Location = "westeurope"
 	}
 
+	// Policy check: resource groups carry location and tags, so the same
+	// allowed-locations / require-tag policies can apply.
+	if err := p.checkPolicy(sub, "", "Microsoft.Resources", "resourceGroups",
+		name, in.Location, in.Tags); err != nil {
+		writeARMError(w, http.StatusForbidden, "RequestDisallowedByPolicy", err.Error())
+		return
+	}
+
 	_, existed := p.store.ReadResourceGroup(sub, name)
 
 	rg := ResourceGroup{

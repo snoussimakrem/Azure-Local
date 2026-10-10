@@ -14,6 +14,12 @@ type Provider struct {
 	store  *Store
 	bus    *kernel.EventBus
 	auth   kernel.AuthFunc
+
+	// authz is optional. When set, policy is enforced on every resource write
+	// and RBAC is enforced when enforceRBAC is true.
+	authz       Authorizer
+	extract     PrincipalExtractor
+	enforceRBAC bool
 }
 
 func New(persist *kernel.PersistenceManager, bus *kernel.EventBus, logger *slog.Logger, auth kernel.AuthFunc) (*Provider, error) {

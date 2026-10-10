@@ -96,6 +96,16 @@ func (p *Provider) ValidateRequest(req *http.Request) error {
 	return err
 }
 
+// ExtractClaims pulls the Bearer token out of the request, verifies it,
+// and returns the claims. Used by the authorization provider.
+func (p *Provider) ExtractClaims(req *http.Request) (VerifiedClaims, error) {
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return nil, errors.New("missing or malformed Authorization header")
+	}
+	return p.keys.Verify(strings.TrimPrefix(auth, "Bearer "))
+}
+
 // VerifyBearer is exported for tests and for the CLI to inspect tokens.
 func (p *Provider) VerifyBearer(token string) (VerifiedClaims, error) {
 	return p.keys.Verify(token)

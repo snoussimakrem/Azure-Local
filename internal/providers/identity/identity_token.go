@@ -183,8 +183,7 @@ func resourceFromScope(scope string, req *http.Request) string {
 
 // oidFor produces a stable, opaque-looking object ID for a given subject.
 func oidFor(subject string) string {
-	// Deterministic base64 of the subject — not cryptographic, just stable.
-	return base64.RawURLEncoding.EncodeToString([]byte("oid:" + subject))
+	return kernel.OIDFor(subject)
 }
 
 var _ = fmt.Sprintf

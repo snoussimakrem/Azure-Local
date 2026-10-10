@@ -12,6 +12,7 @@ import (
 	"github.com/azure-local/azure-local/internal/gateway"
 	"github.com/azure-local/azure-local/internal/kernel"
 	"github.com/azure-local/azure-local/internal/providers/arm"
+	"github.com/azure-local/azure-local/internal/providers/authorization"
 	"github.com/azure-local/azure-local/internal/providers/blob"
 	"github.com/azure-local/azure-local/internal/providers/identity"
 )
@@ -24,7 +25,8 @@ type Server struct {
 	persist  *kernel.PersistenceManager
 	http     *http.Server
 
-	identity *identity.Provider
+	identity      *identity.Provider
+	authorization *authorization.Provider
 }
 
 func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
@@ -35,8 +37,6 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 	bus := kernel.NewEventBus()
 	registry := kernel.NewRegistry()
 
-	// Order matters. Identity must claim token/discovery paths before ARM.
-	// ARM must claim /metadata/endpoints and /subscriptions before Blob.
 	idp, err := identity.New(persist, bus, logger)
 	if err != nil {
 		return nil, fmt.Errorf("identity provider: %w", err)
@@ -45,10 +45,33 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("register identity: %w", err)
 	}
 
-	armProvider, err := arm.New(persist, bus, logger, idp.ValidateRequest)
+	authz, err := authorization.New(persist, bus, logger,
+		kernel.OIDFor("local-client"))
+	if err != nil {
+		return nil, fmt.Errorf("authorization provider: %w", err)
+	}
+	// RBAC enforcement defaults off so `curl` without a token still works.
+	// Policy is always evaluated when assignments exist.
+	authz.SetEnforceRBAC(false)
+	if err := registry.Register(authz); err != nil {
+		return nil, fmt.Errorf("register authorization: %w", err)
+	}
+
+	armProvider, err := arm.New(persist, bus, logger, nil)
 	if err != nil {
 		return nil, fmt.Errorf("arm provider: %w", err)
 	}
+	armProvider.SetAuthorizer(authz, func(req *http.Request) (string, error) {
+		claims, err := idp.ExtractClaims(req)
+		if err != nil {
+			return "", err
+		}
+		oid, _ := claims["oid"].(string)
+		if oid == "" {
+			return "", fmt.Errorf("token has no oid claim")
+		}
+		return oid, nil
+	}, false)
 	if err := registry.Register(armProvider); err != nil {
 		return nil, fmt.Errorf("register arm: %w", err)
 	}
@@ -69,13 +92,14 @@ func New(cfg kernel.Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:      cfg,
-		logger:   logger,
-		registry: registry,
-		bus:      bus,
-		persist:  persist,
-		http:     httpSrv,
-		identity: idp,
+		cfg:           cfg,
+		logger:        logger,
+		registry:      registry,
+		bus:           bus,
+		persist:       persist,
+		http:          httpSrv,
+		identity:      idp,
+		authorization: authz,
 	}, nil
 }
 

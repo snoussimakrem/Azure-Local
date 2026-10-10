@@ -102,6 +102,18 @@ func (p *Provider) putResource(w http.ResponseWriter, req *http.Request, sub, rg
 		return
 	}
 
+	// Policy first (principal-independent).
+	if err := p.checkPolicy(sub, rg, ns, rtype, name, in.Location,
+		projectTags(map[string]any{"tags": in.Tags})); err != nil {
+		writeARMError(w, http.StatusForbidden, "RequestDisallowedByPolicy", err.Error())
+		return
+	}
+	// RBAC second (principal-dependent).
+	if err := p.checkRBAC(req, sub, rg, ns, rtype, name); err != nil {
+		writeARMError(w, http.StatusForbidden, "AuthorizationFailed", err.Error())
+		return
+	}
+
 	in.ID = resourceID(sub, rg, ns, rtype, name)
 	in.Name = name
 	in.Type = ns + "/" + rtype
